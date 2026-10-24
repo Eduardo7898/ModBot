@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -168,6 +169,15 @@ def config_cmd(
         raise typer.Exit(code=1) from exc
 
 
+def _is_android() -> bool:
+    """Verifica se a aplicação está rodando em ambiente Android (Termux/Pydroid)."""
+    return (
+        hasattr(sys, "getandroidapilevel")
+        or "ANDROID_ROOT" in os.environ
+        or "com.termux" in sys.executable
+    )
+
+
 @app.command(name="update", help="Atualiza o ModBot com a última versão do GitHub.")
 def update_cmd(
     repo: Annotated[
@@ -187,30 +197,59 @@ def update_cmd(
     )
 
     uv_path = shutil.which("uv")
-    if uv_path:
-        cmd = [uv_path, "pip", "install", "--upgrade", f"git+{repo}"]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", f"git+{repo}"]
+    # O UV não possui suporte ao Android ('Unknown operating system: android')
+    use_uv = uv_path is not None and not _is_android()
 
+    success = False
     try:
-        subprocess.run(cmd, check=True)
-        typer.secho(
-            " ModBot atualizado com sucesso!",
-            fg=typer.colors.GREEN,
-            bold=True,
-        )
-    except subprocess.CalledProcessError as err:
-        typer.secho(
-            f"❌ Falha ao atualizar ModBot: comando retornou código {err.returncode}",
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(code=err.returncode) from err
+        if use_uv:
+            cmd = [uv_path, "pip", "install", "--upgrade", f"git+{repo}"]
+            try:
+                subprocess.run(cmd, check=True)
+                success = True
+            except subprocess.CalledProcessError:
+                typer.secho(
+                    "⚠️ Falha ao atualizar via UV. Tentando com pip...",
+                    fg=typer.colors.YELLOW,
+                )
+
+        if not success:
+            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", f"git+{repo}"]
+            try:
+                subprocess.run(cmd, check=True)
+                success = True
+            except subprocess.CalledProcessError:
+                if sys.prefix == sys.base_prefix:
+                    try:
+                        subprocess.run(cmd + ["--break-system-packages"], check=True)
+                        success = True
+                    except subprocess.CalledProcessError as err:
+                        typer.secho(
+                            f"❌ Falha ao atualizar: comando retornou {err.returncode}",
+                            fg=typer.colors.RED,
+                        )
+                        raise typer.Exit(code=err.returncode) from err
+                else:
+                    typer.secho(
+                        "❌ Falha ao atualizar ModBot via pip.",
+                        fg=typer.colors.RED,
+                    )
+                    raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         typer.secho(
             f"❌ Erro inesperado durante a atualização: {exc}",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1) from exc
+
+    if success:
+        typer.secho(
+            " ModBot atualizado com sucesso!",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
 
 
 if __name__ == "__main__":

@@ -19,10 +19,11 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".modbot"
 CONFIG_FILE = CONFIG_DIR / "config.enc"
+SEED_FILE = CONFIG_DIR / ".device_seed"
 
 
-def _get_device_seed() -> bytes:
-    """Gera uma semente única combinando dados do usuário e do dispositivo."""
+def _legacy_device_seed() -> bytes:
+    """Gera a semente antiga combinando dados voláteis do usuário e dispositivo."""
     try:
         user = getpass.getuser()
     except Exception:
@@ -38,11 +39,55 @@ def _get_device_seed() -> bytes:
     return seed_str.encode("utf-8")
 
 
-def _derive_keys(salt: bytes) -> tuple[bytes, bytes]:
+def _save_seed(seed: bytes) -> None:
+    """Salva a semente no arquivo de configuração com permissões restritas."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _secure_dir_permissions(CONFIG_DIR)
+        SEED_FILE.write_bytes(seed)
+        _secure_file_permissions(SEED_FILE)
+    except OSError:
+        pass
+
+
+def _get_device_seed() -> bytes:
+    """Obtém ou gera uma semente persistente única para esta instalação/dispositivo.
+
+    Garante compatibilidade e estabilidade entre execuções mesmo no Android/Termux
+    (onde uuid.getnode() gera números aleatórios por restrições do SELinux e
+    platform.node() muda com conexões de rede).
+    """
+    if SEED_FILE.is_file():
+        try:
+            seed = SEED_FILE.read_bytes().strip()
+            if seed:
+                return seed
+        except OSError:
+            pass
+
+    # Se já existir um token antigo sem arquivo de semente, tenta migrar se for válido
+    if CONFIG_FILE.is_file():
+        legacy_seed = _legacy_device_seed()
+        try:
+            content = CONFIG_FILE.read_text(encoding="utf-8").strip()
+            if content:
+                decrypt_data(content, seed=legacy_seed)
+                _save_seed(legacy_seed)
+                return legacy_seed
+        except Exception:
+            pass
+
+    # Gera semente permanente e criptograficamente segura
+    new_seed = secrets.token_hex(32).encode("utf-8")
+    _save_seed(new_seed)
+    return new_seed
+
+
+def _derive_keys(salt: bytes, seed: bytes | None = None) -> tuple[bytes, bytes]:
     """Deriva chave de cifragem (32 bytes) e chave de autenticação HMAC (32 bytes)."""
     derived = hashlib.pbkdf2_hmac(
         hash_name="sha256",
-        password=_get_device_seed(),
+        password=seed if seed is not None else _get_device_seed(),
         salt=salt,
         iterations=100_000,
         dklen=64,
@@ -65,13 +110,13 @@ def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     return bytes(stream[:length])
 
 
-def encrypt_data(plaintext: str) -> str:
+def encrypt_data(plaintext: str, seed: bytes | None = None) -> str:
     """Cifra um texto puro e retorna string codificada em base64 com HMAC."""
     raw_data = plaintext.encode("utf-8")
     salt = secrets.token_bytes(16)
     nonce = secrets.token_bytes(16)
 
-    enc_key, mac_key = _derive_keys(salt)
+    enc_key, mac_key = _derive_keys(salt, seed=seed)
     stream = _keystream(enc_key, nonce, len(raw_data))
     ciphertext = bytes(a ^ b for a, b in zip(raw_data, stream))
 
@@ -81,7 +126,7 @@ def encrypt_data(plaintext: str) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
-def decrypt_data(encoded: str) -> str:
+def decrypt_data(encoded: str, seed: bytes | None = None) -> str:
     """Decifra um texto previamente encriptado com verificação de integridade."""
     try:
         payload = base64.b64decode(encoded.encode("ascii"))
@@ -96,7 +141,7 @@ def decrypt_data(encoded: str) -> str:
     expected_tag = payload[32:64]
     ciphertext = payload[64:]
 
-    enc_key, mac_key = _derive_keys(salt)
+    enc_key, mac_key = _derive_keys(salt, seed=seed)
     calculated_tag = hmac.new(
         mac_key, salt + nonce + ciphertext, hashlib.sha256
     ).digest()
@@ -164,11 +209,17 @@ def has_token() -> bool:
 
 
 def remove_token() -> bool:
-    """Remove o arquivo de token configurado. Retorna True se o arquivo foi excluído."""
+    """Remove o token configurado e sua semente. Retorna True se excluído."""
+    removed = False
     if CONFIG_FILE.exists():
         try:
             CONFIG_FILE.unlink()
-            return True
+            removed = True
         except OSError:
-            return False
-    return False
+            pass
+    if SEED_FILE.exists():
+        try:
+            SEED_FILE.unlink()
+        except OSError:
+            pass
+    return removed
