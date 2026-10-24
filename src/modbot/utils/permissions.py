@@ -31,6 +31,7 @@ async def require_master(interaction: discord.Interaction) -> bool:
 
 def master_check() -> app_commands.check:
     """Decorator de verificação de permissão para comandos de app."""
+
     async def predicate(interaction: discord.Interaction) -> bool:
         return await is_master(interaction)
 

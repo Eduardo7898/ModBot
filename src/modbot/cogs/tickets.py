@@ -175,8 +175,7 @@ class TicketControls(discord.ui.View):
             if isinstance(interaction.channel, discord.TextChannel):
                 await interaction.channel.delete(
                     reason=(
-                        f"Ticket fechado por {interaction.user} "
-                        f"({interaction.user.id})"
+                        f"Ticket fechado por {interaction.user} ({interaction.user.id})"
                     )
                 )
         except discord.HTTPException:

@@ -15,9 +15,7 @@ class Moderation(commands.Cog):
         description="Ativa ou desativa a contenção conservadora de novos bots.",
     )
     @app_commands.describe(ativada="Se a proteção deve ficar ativada.")
-    async def protecao(
-        self, interaction: discord.Interaction, ativada: bool
-    ) -> None:
+    async def protecao(self, interaction: discord.Interaction, ativada: bool) -> None:
         if not interaction.guild:
             return await interaction.response.send_message(
                 "Use em um servidor.", ephemeral=True
