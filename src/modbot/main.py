@@ -27,7 +27,7 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 
-REPO_URL = "https://github.com/vinifreittas/ModBot.git"
+REPO_URL = "https://github.com/Eduardo7898/ModBot.git"
 
 
 def start_bot() -> None:
