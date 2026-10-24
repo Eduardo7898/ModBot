@@ -6,7 +6,7 @@ TORTOISE_ORM = {
     "connections": {"default": DATABASE_URL},
     "apps": {
         "models": {
-            "models": ["src.models"],
+            "models": ["modbot.database.models"],
             "default_connection": "default",
         }
     },

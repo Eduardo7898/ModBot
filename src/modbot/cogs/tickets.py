@@ -1,8 +1,11 @@
+import asyncio
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modbot.models import get_guild_config
+from modbot.database.models import get_guild_config
 from modbot.utils.permissions import require_master
 
 TICKET_TYPES = [
@@ -74,13 +77,20 @@ class TicketCategorySelect(discord.ui.Select):
                 name=f"ticket-{self.values[0]}-{safe_name}",
                 category=category,
                 overwrites=overwrites,
-                topic=f"Ticket de {interaction.user} ({interaction.user.id}) | categoria: {self.values[0]}",
+                topic=(
+                    f"Ticket de {interaction.user} ({interaction.user.id}) | "
+                    f"categoria: {self.values[0]}"
+                ),
                 reason=f"Ticket aberto por {interaction.user} ({interaction.user.id})",
             )
             view = TicketControls(interaction.user.id, config.ticket_support_role_id)
             mention = f"<@&{support_role.id}> " if support_role else ""
+            welcome_msg = (
+                f"{interaction.user.mention} {mention}"
+                "Seu ticket foi aberto. Explique como podemos ajudar."
+            )
             await channel.send(
-                f"{interaction.user.mention} {mention}Seu ticket foi aberto. Explique como podemos ajudar.",
+                welcome_msg,
                 embed=discord.Embed(
                     title=f"Ticket: {self.values[0].title()}",
                     color=discord.Color.blurple(),
@@ -101,10 +111,45 @@ class TicketCategorySelect(discord.ui.Select):
 
 
 class TicketControls(discord.ui.View):
-    def __init__(self, opener_id: int, support_role_id: int | None):
+    def __init__(
+        self,
+        opener_id: int | None = None,
+        support_role_id: int | None = None,
+    ):
         super().__init__(timeout=None)
         self.opener_id = opener_id
         self.support_role_id = support_role_id
+
+    async def _resolve_permissions(
+        self, interaction: discord.Interaction
+    ) -> tuple[bool, int | None]:
+        """Verifica se o usuário é o autor do ticket ou membro da equipe de suporte."""
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False, None
+
+        opener_id = self.opener_id
+        if opener_id is None and interaction.channel and interaction.channel.topic:
+            # Tenta extrair o ID do autor do ticket a partir do tópico do canal
+            match = re.search(r"\((\d{17,20})\)", interaction.channel.topic)
+            if match:
+                opener_id = int(match.group(1))
+
+        support_role_id = self.support_role_id
+        if support_role_id is None:
+            config = await get_guild_config(interaction.guild.id)
+            support_role_id = config.ticket_support_role_id
+
+        is_support = (
+            interaction.user.guild_permissions.manage_channels
+            or interaction.user.guild_permissions.administrator
+            or (
+                support_role_id
+                and any(r.id == support_role_id for r in interaction.user.roles)
+            )
+        )
+        is_opener = opener_id is not None and interaction.user.id == opener_id
+        has_access = is_support or is_opener
+        return has_access, opener_id
 
     @discord.ui.button(
         label="Fechar ticket",
@@ -115,28 +160,25 @@ class TicketControls(discord.ui.View):
     async def close_ticket(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        has_access, _ = await self._resolve_permissions(interaction)
+        if not has_access:
             return await interaction.response.send_message(
-                "Use em um servidor.", ephemeral=True
+                "Somente quem abriu ou a equipe de suporte pode fechar.",
+                ephemeral=True,
             )
-        is_support = interaction.user.guild_permissions.manage_channels or (
-            self.support_role_id
-            and any(r.id == self.support_role_id for r in interaction.user.roles)
-        )
-        if interaction.user.id != self.opener_id and not is_support:
-            return await interaction.response.send_message(
-                "Somente quem abriu ou a equipe de suporte pode fechar.", ephemeral=True
-            )
+
         await interaction.response.send_message(
             "Ticket será fechado em 5 segundos.", ephemeral=True
         )
-        import asyncio
-
         await asyncio.sleep(5)
         try:
-            await interaction.channel.delete(
-                reason=f"Ticket fechado por {interaction.user} ({interaction.user.id})"
-            )
+            if isinstance(interaction.channel, discord.TextChannel):
+                await interaction.channel.delete(
+                    reason=(
+                        f"Ticket fechado por {interaction.user} "
+                        f"({interaction.user.id})"
+                    )
+                )
         except discord.HTTPException:
             pass
 
@@ -149,15 +191,8 @@ class TicketControls(discord.ui.View):
     async def add_member(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message(
-                "Use em um servidor.", ephemeral=True
-            )
-        is_support = interaction.user.guild_permissions.manage_channels or (
-            self.support_role_id
-            and any(r.id == self.support_role_id for r in interaction.user.roles)
-        )
-        if interaction.user.id != self.opener_id and not is_support:
+        has_access, _ = await self._resolve_permissions(interaction)
+        if not has_access:
             return await interaction.response.send_message(
                 "Somente quem abriu ou a equipe de suporte pode adicionar membros.",
                 ephemeral=True,
@@ -178,6 +213,7 @@ class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.add_view(TicketPanel())
+        self.bot.add_view(TicketControls())
 
     @app_commands.command(
         name="ticket_painel", description="Publica o painel para abrir tickets."

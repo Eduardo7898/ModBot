@@ -2,12 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modbot.models import get_guild_config
+from modbot.database.models import get_guild_config
 from modbot.utils.permissions import require_master
 
 
 class Staff(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @app_commands.command(
@@ -32,7 +32,7 @@ class Staff(commands.Cog):
         cargo: discord.Role,
         acao: app_commands.Choice[str],
         motivo: str = "Não informado",
-    ):
+    ) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message(
                 "Use em um servidor.", ephemeral=True
@@ -71,14 +71,20 @@ class Staff(commands.Cog):
                 else None
             )
             if isinstance(log, discord.TextChannel):
-                await log.send(
-                    f"🎖️ **Cargo alterado**\nResponsável: {interaction.user.mention}\nMembro: {membro.mention}\nCargo: {cargo.mention}\nAção: {acao.name}\nMotivo: {motivo[:300]}"
+                log_message = (
+                    "🎖️ **Cargo alterado**\n"
+                    f"Responsável: {interaction.user.mention}\n"
+                    f"Membro: {membro.mention}\n"
+                    f"Cargo: {cargo.mention}\n"
+                    f"Ação: {acao.name}\n"
+                    f"Motivo: {motivo[:300]}"
                 )
+                await log.send(log_message)
         except discord.Forbidden:
             await interaction.response.send_message(
                 "Não tenho permissão para alterar esse cargo.", ephemeral=True
             )
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Staff(bot))

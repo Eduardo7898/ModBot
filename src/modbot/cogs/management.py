@@ -2,19 +2,19 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modbot.models import get_guild_config, update_guild_config
+from modbot.database.models import get_guild_config, update_guild_config
 from modbot.utils.permissions import require_master
 
 
 class Management(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @app_commands.command(
         name="gerenciamento",
         description="Mostra o painel administrativo e métricas do bot.",
     )
-    async def gerenciamento(self, interaction: discord.Interaction):
+    async def gerenciamento(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
             return await interaction.response.send_message(
                 "Use em um servidor.", ephemeral=True
@@ -35,11 +35,6 @@ class Management(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="Memória do processo",
-            value="Indisponível no Android/Termux",
-            inline=True,
-        )
-        embed.add_field(
             name="Cargo Master",
             value=f"<@&{config.master_role_id}>"
             if config.master_role_id
@@ -57,7 +52,7 @@ class Management(commands.Cog):
 
 
 class ConfigPanel(discord.ui.View):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(timeout=180)
 
     @discord.ui.button(
@@ -65,7 +60,7 @@ class ConfigPanel(discord.ui.View):
     )
     async def welcome(
         self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    ) -> None:
         if not interaction.guild or not await require_master(interaction):
             return
         await interaction.response.send_message(
@@ -74,7 +69,7 @@ class ConfigPanel(discord.ui.View):
 
 
 class ConfigChannel(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @app_commands.command(name="config_canal", description="Configura um canal do bot.")
@@ -94,7 +89,7 @@ class ConfigChannel(commands.Cog):
         interaction: discord.Interaction,
         tipo: app_commands.Choice[str],
         canal: discord.TextChannel,
-    ):
+    ) -> None:
         if not interaction.guild:
             return await interaction.response.send_message(
                 "Use em um servidor.", ephemeral=True
@@ -115,7 +110,7 @@ class ConfigChannel(commands.Cog):
         interaction: discord.Interaction,
         categoria: discord.CategoryChannel,
         cargo_suporte: discord.Role,
-    ):
+    ) -> None:
         if not interaction.guild:
             return await interaction.response.send_message(
                 "Use em um servidor.", ephemeral=True
@@ -128,11 +123,12 @@ class ConfigChannel(commands.Cog):
             ticket_support_role_id=cargo_suporte.id,
         )
         await interaction.response.send_message(
-            f"Tickets configurados. Categoria: **{categoria.name}**; suporte: {cargo_suporte.mention}.",
+            f"Tickets configurados. Categoria: **{categoria.name}**; "
+            f"suporte: {cargo_suporte.mention}.",
             ephemeral=True,
         )
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Management(bot))
     await bot.add_cog(ConfigChannel(bot))

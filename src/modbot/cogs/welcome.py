@@ -1,15 +1,15 @@
 import discord
 from discord.ext import commands
 
-from modbot.models import get_guild_config
+from modbot.database.models import get_guild_config
 
 
 class Welcome(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
+    async def on_member_join(self, member: discord.Member) -> None:
         config = await get_guild_config(member.guild.id)
         if member.bot:
             await self._handle_new_bot(member, config)
@@ -43,9 +43,10 @@ class Welcome(commands.Cog):
             ),
         )
 
-    async def _handle_new_bot(self, member, config):
-        """Contenção conservadora: remove bots recém-adicionados apenas quando o autor não pode ser validado.
-        Não remove cargos de pessoas automaticamente; isso pode causar danos graves em caso de falso positivo.
+    async def _handle_new_bot(self, member: discord.Member, config) -> None:
+        """Contenção conservadora: remove bots recém-adicionados apenas quando o autor
+        não pode ser validado. Não remove cargos de pessoas automaticamente;
+        isso pode causar danos graves em caso de falso positivo.
         """
         if not config.raid_protection_enabled:
             return
@@ -80,28 +81,32 @@ class Welcome(commands.Cog):
                         )
                     ):
                         return
-                    # Se o autor não for autorizado, tenta expulsar o bot somente se o bot tiver permissão.
+                    # Se o autor não for autorizado, expulsa o bot se tiver permissão.
                     if (
                         member.guild.me
                         and member.guild.me.guild_permissions.kick_members
                     ):
                         await member.kick(
-                            reason="Anti-Raid: bot adicionado por usuário não autorizado"
+                            reason=(
+                                "Anti-Raid: bot adicionado por usuário não autorizado"
+                            )
                         )
                         if isinstance(log_channel, discord.TextChannel):
                             await log_channel.send(
-                                f"🛡️ Bot não autorizado expulso: {member} (`{member.id}`). "
-                                f"Autor identificado: {actor} (`{actor.id}`) se disponível."
+                                f"🛡️ Bot não autorizado expulso: {member} "
+                                f"(`{member.id}`). Autor identificado: {actor} "
+                                f"(`{actor.id}`) se disponível."
                             )
                     return
         except (discord.Forbidden, discord.HTTPException):
             if isinstance(log_channel, discord.TextChannel):
                 await log_channel.send(
-                    "⚠️ Não foi possível verificar os Audit Logs do Discord. Verifique as permissões do bot."
+                    "⚠️ Não foi possível verificar os Audit Logs do Discord. "
+                    "Verifique as permissões do bot."
                 )
 
     @commands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
+    async def on_member_remove(self, member: discord.Member) -> None:
         config = await get_guild_config(member.guild.id)
         channel = (
             member.guild.get_channel(config.leave_channel_id)
@@ -109,11 +114,13 @@ class Welcome(commands.Cog):
             else None
         )
         if isinstance(channel, discord.TextChannel):
+            escaped_name = discord.utils.escape_markdown(member.display_name)
+            member_count = member.guild.member_count or "desconhecido"
             await channel.send(
-                f"👋 **{discord.utils.escape_markdown(member.display_name)}** saiu do servidor. "
-                f"Membros restantes: **{member.guild.member_count or 'desconhecido'}**."
+                f"👋 **{escaped_name}** saiu do servidor. "
+                f"Membros restantes: **{member_count}**."
             )
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Welcome(bot))

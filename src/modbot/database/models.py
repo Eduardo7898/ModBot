@@ -23,12 +23,13 @@ class GuildConfig(Model):
 
 
 async def get_guild_config(guild_id: int) -> GuildConfig:
+    """Retorna a configuração da guilda, criando-a se ainda não existir."""
     config, _ = await GuildConfig.get_or_create(guild_id=guild_id)
     return config
 
 
-async def update_guild_config(guild_id: int, **kwargs) -> GuildConfig:
-    allowed = {
+_ALLOWED_FIELDS = frozenset(
+    {
         "master_role_id",
         "welcome_channel_id",
         "leave_channel_id",
@@ -40,7 +41,12 @@ async def update_guild_config(guild_id: int, **kwargs) -> GuildConfig:
         "ticket_log_channel_id",
         "raid_protection_enabled",
     }
-    invalid = set(kwargs) - allowed
+)
+
+
+async def update_guild_config(guild_id: int, **kwargs: object) -> GuildConfig:
+    """Atualiza campos da configuração da guilda de forma segura."""
+    invalid = set(kwargs) - _ALLOWED_FIELDS
     if invalid:
         raise ValueError(f"Campos não permitidos: {', '.join(sorted(invalid))}")
     config = await get_guild_config(guild_id)
