@@ -1,8 +1,10 @@
 from tortoise import fields
 from tortoise.models import Model
 
+
 class GuildConfig(Model):
     """Configuração persistente de cada servidor Discord."""
+
     guild_id = fields.BigIntField(primary_key=True)
     master_role_id = fields.BigIntField(null=True)
     welcome_channel_id = fields.BigIntField(null=True)
@@ -19,15 +21,23 @@ class GuildConfig(Model):
     class Meta:
         table = "guild_configurations"
 
+
 async def get_guild_config(guild_id: int) -> GuildConfig:
     config, _ = await GuildConfig.get_or_create(guild_id=guild_id)
     return config
 
+
 async def update_guild_config(guild_id: int, **kwargs) -> GuildConfig:
     allowed = {
-        "master_role_id", "welcome_channel_id", "leave_channel_id",
-        "antiraid_channel_id", "call_log_channel_id", "ticket_category_id",
-        "ticket_support_role_id", "staff_log_channel_id", "ticket_log_channel_id",
+        "master_role_id",
+        "welcome_channel_id",
+        "leave_channel_id",
+        "antiraid_channel_id",
+        "call_log_channel_id",
+        "ticket_category_id",
+        "ticket_support_role_id",
+        "staff_log_channel_id",
+        "ticket_log_channel_id",
         "raid_protection_enabled",
     }
     invalid = set(kwargs) - allowed

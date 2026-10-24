@@ -8,14 +8,16 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from tortoise import Tortoise
 
-from src.database import TORTOISE_ORM
+from modbot.database import TORTOISE_ORM
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN não definido. Copie .env.example para .env e configure o token.")
+    raise RuntimeError(
+        "DISCORD_TOKEN não definido. Copie .env.example para .env e configure o token."
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +29,7 @@ intents.guilds = True
 intents.members = True
 intents.voice_states = True
 intents.message_content = True  # Ative também este intent no Developer Portal.
+
 
 class MeuBot(commands.Bot):
     async def setup_hook(self):
@@ -49,15 +52,23 @@ class MeuBot(commands.Bot):
         finally:
             await super().close()
 
+
 bot = MeuBot(command_prefix="!", intents=intents)
+
 
 @bot.event
 async def on_ready():
-    logging.info("Conectado como %s (ID: %s)", bot.user, bot.user.id if bot.user else "desconhecido")
+    logging.info(
+        "Conectado como %s (ID: %s)",
+        bot.user,
+        bot.user.id if bot.user else "desconhecido",
+    )
+
 
 async def main():
     async with bot:
         await bot.start(TOKEN)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
