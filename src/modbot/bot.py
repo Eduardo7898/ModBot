@@ -33,17 +33,28 @@ class ModBot(commands.Bot):
 
         super().__init__(command_prefix="!", intents=intents)
 
+    
     async def setup_hook(self) -> None:
         await Tortoise.init(config=TORTOISE_ORM)
         await Tortoise.generate_schemas(safe=True)
 
         cogs_dir = Path(__file__).parent / "cogs"
+
         for path in sorted(cogs_dir.glob("*.py")):
             if path.name.startswith("_"):
                 continue
+
             extension = f"modbot.cogs.{path.stem}"
             await self.load_extension(extension)
             _log.info("Cog carregado: %s", extension)
+
+        # Sincroniza os comandos de barra com o Discord
+        synced = await self.tree.sync()
+        _log.info(
+            "Sincronização concluída: %s comandos de aplicação registrados.",
+            len(synced),
+        )
+
 
     async def on_ready(self) -> None:
         _log.info(
