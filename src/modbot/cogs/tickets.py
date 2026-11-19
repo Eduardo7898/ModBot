@@ -11,10 +11,10 @@ from discord.ext import commands
 from modbot.database.models import get_guild_config
 from modbot.utils.permissions import require_master
 
-FEEDBACK_CHANNEL_ID = 1563536881688518769
-RANKING_CHANNEL_ID = 1572818143720636548
+FEEDBACK_CHANNEL_ID = 1562820906949148765
+RANKING_CHANNEL_ID = 1572970836145471608
 FEEDBACK_COLOR = 0xF1C40F
-PANEL_COLOR = 0xE01E2B
+PANEL_COLOR = 0xF1C40F
 RANKING_COLOR = 16766208
 BRASILIA_TZ = timezone(timedelta(hours=-3))
 STATS_FILE = Path("data/ticket_staff_stats.json")
@@ -25,22 +25,22 @@ BANNER_URL = (
     "?ex=6aff48fe&is=6afdf77e&hm=8d7cdf648f13dded74f146a34141b8cd99c7c3ea177a50c415a141b6d5c72c04&"
 )
 
-PANEL_TITLE = "「 BDU 」• Central de Atendimento"
+PANEL_TITLE = "「 BDV 」• Central de Atendimento"
 PANEL_DESC = (
-    "Bem-vindo à **Central de Suporte da BDU!**\n"
+    "Bem-vindo à **Central de Suporte da BDV!**\n"
     "Selecione a categoria abaixo para abrir um ticket.\n\n"
     "❓ **Dúvidas** — Esclarecimentos e orientações\n"
     "🤝 **Parcerias** — Propostas de colaboração\n"
     "📢 **Denúncias** — Reporte de players ou violações\n"
-    "💰 **Financeiro** — Compra de mods/equipe/VIP\n\n"
+    "💰 **Financeiro** — Compra de mods/EQUIP BDV/VIP\n\n"
     "⚠️ Use os tickets com responsabilidade.\n"
     "Abusos poderão resultar em punições.\n\n"
-    "「 BDU 」• Selecione uma categoria abaixo"
+    "「 BDV 」• Selecione uma categoria abaixo"
 )
-PANEL_FOOTER = "BAILE DO URSO • © Todos os direitos reservados."
+PANEL_FOOTER = "BAILE DA VILA • © Todos os direitos reservados."
 
 TICKET_TYPES = [
-    discord.SelectOption(label="Financeiro", value="financeiro", emoji="💠", description="Compras de mods/equipe/VIP"),
+    discord.SelectOption(label="Financeiro", value="financeiro", emoji="💠", description="Compras de mods/EQUIP BDV/VIP"),
     discord.SelectOption(label="Parcerias", value="parcerias", emoji="🤝", description="Proposta de parceria."),
     discord.SelectOption(label="Dúvidas", value="duvidas", emoji="❓", description="Esclarecimento e orientação"),
     discord.SelectOption(label="Denuncia", value="denuncia", emoji="🆘", description="Repórter de players ou violações STAFF"),
@@ -427,7 +427,7 @@ class TicketControls(discord.ui.View):
         allowed, _, _ = await self._context(interaction)
         if not allowed:
             return await interaction.response.send_message("Somente quem abriu ou a equipe de suporte pode adicionar membros.", ephemeral=True)
-        await interaction.response.send_message("Use /ticket_adicionar neste canal para conceder acesso ao membro.", ephemeral=True)
+        await interaction.response.send_message("Função de adicionar membro indisponível no momento.", ephemeral=True)
 
 
 class TicketPanel(discord.ui.View):
@@ -499,16 +499,6 @@ class Tickets(commands.Cog):
             await interaction.response.send_message(f"Ranking atualizado em {msg.channel.mention}.", ephemeral=True)
         else:
             await interaction.response.send_message(embed=build_ranking_embed(interaction.guild.id), ephemeral=True)
-
-    @app_commands.command(name="ticket_adicionar", description="Adiciona um membro ao ticket atual.")
-    async def ticket_adicionar(self, interaction: discord.Interaction, membro: discord.Member):
-        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Use dentro de um canal de ticket.", ephemeral=True)
-        config = await get_guild_config(interaction.guild.id)
-        if not isinstance(interaction.user, discord.Member) or not _is_staff(interaction.user, config.ticket_support_role_id):
-            return await interaction.response.send_message("Somente a equipe de suporte pode usar este comando.", ephemeral=True)
-        await interaction.channel.set_permissions(membro, view_channel=True, send_messages=True, read_message_history=True)
-        await interaction.response.send_message(f"{membro.mention} recebeu acesso ao ticket.", ephemeral=True)
 
 
 async def setup(bot):
