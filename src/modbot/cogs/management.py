@@ -17,11 +17,88 @@ from modbot.utils.permissions import require_master
 CHANNEL_ITEMS = [
     ("Boas-vindas", "welcome_channel_id", "👋"),
     ("Saídas", "leave_channel_id", "🚪"),
-    ("Anti-Raid", "antiraid_channel_id", "🚨"),
     ("Logs de Voz", "call_log_channel_id", "🔊"),
-    ("Logs da Equipe", "staff_log_channel_id", "👮"),
-    ("Logs de Tickets", "ticket_log_channel_id", "🎫"),
 ]
+
+DEFAULT_WELCOME_COLOR = 0x09FF00  # 655104
+DEFAULT_WELCOME_IMAGE = (
+    "https://cdn.discordapp.com/attachments/1501431133739421777/1533174772274565220/"
+    "a_26f359effa1f3f0d4d3ddc17963770c5.webp?ex=6b01de46&is=6b008cc6&hm="
+    "748843795af71935c8d1d944e739d8050678c23e85544b3941fc012535a6f48a&"
+)
+
+_WELCOME_VISUAL_CACHE: dict[int, dict[str, object]] = {}
+
+
+def _parse_color_input(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("#"):
+        cleaned = cleaned[1:]
+    elif cleaned.lower().startswith("0x"):
+        cleaned = cleaned[2:]
+    try:
+        value = int(cleaned, 16)
+    except ValueError:
+        return None
+    if 0 <= value <= 0xFFFFFF:
+        return value
+    return None
+
+
+def get_welcome_visual_settings(guild_id: int, config: object) -> tuple[int, str]:
+    cached = _WELCOME_VISUAL_CACHE.get(guild_id, {})
+
+    raw_color = getattr(config, "welcome_embed_color", None)
+    if raw_color is None:
+        raw_color = cached.get("welcome_embed_color")
+    if isinstance(raw_color, int) and 0 <= raw_color <= 0xFFFFFF:
+        color = raw_color
+    elif isinstance(raw_color, str):
+        parsed_color = _parse_color_input(raw_color)
+        color = parsed_color if parsed_color is not None else DEFAULT_WELCOME_COLOR
+    else:
+        color = DEFAULT_WELCOME_COLOR
+
+    raw_image = getattr(config, "welcome_banner_url", None)
+    if raw_image is None and "welcome_banner_url" in cached:
+        raw_image = cached.get("welcome_banner_url")
+    if raw_image is None:
+        image_url = DEFAULT_WELCOME_IMAGE
+    else:
+        image_url = str(raw_image).strip()
+
+    return color, image_url
+
+
+async def save_welcome_visual_settings(
+    guild_id: int,
+    *,
+    color: int | None = None,
+    image_url: str | None = None,
+) -> None:
+    payload: dict[str, object] = {}
+    cache_entry = dict(_WELCOME_VISUAL_CACHE.get(guild_id, {}))
+
+    if color is not None:
+        payload["welcome_embed_color"] = color
+        cache_entry["welcome_embed_color"] = color
+    if image_url is not None:
+        payload["welcome_banner_url"] = image_url.strip()
+        cache_entry["welcome_banner_url"] = image_url.strip()
+
+    _WELCOME_VISUAL_CACHE[guild_id] = cache_entry
+
+    if not payload:
+        return
+
+    try:
+        await update_guild_config(guild_id, **payload)
+    except Exception:
+        pass
 
 
 def format_uptime(start_time: datetime) -> str:
@@ -86,16 +163,25 @@ async def build_category_embed(guild: discord.Guild, category: str) -> discord.E
     config = await get_guild_config(guild.id)
 
     if category == "channels":
+        welcome_color, welcome_image = get_welcome_visual_settings(guild.id, config)
         embed = discord.Embed(
             title=f"📺 Canais e Logs | {guild.name}",
-            description="Selecione abaixo qual tipo de canal e qual canal de destino deseja configurar.",
-            color=discord.Color.blurple(),
+            description="Selecione o tipo de canal e o canal de destino, ou edite o visual das boas-vindas.",
+            color=welcome_color,
         )
         embed.add_field(
             name="Canais Atuais",
             value="\n".join(
                 f"{emoji} **{label}:** {_fmt_id(getattr(config, attr, None), '#')}"
                 for label, attr, emoji in CHANNEL_ITEMS
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Visual de Boas-vindas",
+            value=(
+                f"🎨 **Cor:** `#{welcome_color:06X}`\n"
+                f"🖼️ **Imagem:** `{welcome_image if welcome_image else 'Sem imagem'}`"
             ),
             inline=False,
         )
@@ -135,6 +221,60 @@ async def build_category_embed(guild: discord.Guild, category: str) -> discord.E
 
     embed.set_footer(text="Acesso Restrito • Consola do Administrador")
     return embed
+
+
+class WelcomeVisualModal(discord.ui.Modal, title="Editar Visual de Boas-vindas"):
+    color_input = discord.ui.TextInput(
+        label="Cor do Embed (HEX)",
+        placeholder="Ex: #09FF00 ou 09FF00",
+        required=True,
+        max_length=12,
+    )
+    image_input = discord.ui.TextInput(
+        label="URL da Imagem (deixe vazio para remover)",
+        placeholder="https://... (ou vazio)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, parent_view: "ManagementPanelView", current_color: int, current_image: str) -> None:
+        super().__init__()
+        self.parent_view = parent_view
+        self.color_input.default = f"#{current_color:06X}"
+        self.image_input.default = current_image
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await self.parent_view._validate_interaction(interaction):
+            return
+        if not interaction.guild:
+            return
+
+        parsed_color = _parse_color_input(self.color_input.value)
+        if parsed_color is None:
+            return await interaction.response.send_message(
+                "⚠️ Cor inválida. Use um valor hexadecimal como `#09FF00` ou `09FF00`.",
+                ephemeral=True,
+            )
+
+        image_url = (self.image_input.value or "").strip()
+        if image_url and not (image_url.startswith("https://") or image_url.startswith("http://")):
+            return await interaction.response.send_message(
+                "⚠️ A URL da imagem deve começar com `https://` ou `http://` (ou ficar vazia).",
+                ephemeral=True,
+            )
+
+        await save_welcome_visual_settings(
+            interaction.guild.id,
+            color=parsed_color,
+            image_url=image_url,
+        )
+        _invalidate_protection_cache(self.parent_view.bot, interaction.guild.id)
+
+        await interaction.response.edit_message(
+            embed=await build_category_embed(interaction.guild, "channels"),
+            view=self.parent_view,
+        )
 
 
 class ManagementPanelView(discord.ui.View):
@@ -178,7 +318,7 @@ class ManagementPanelView(discord.ui.View):
                 discord.SelectOption(
                     label="Canais e Logs",
                     value="channels",
-                    description="Configurar canais de boas-vindas, saídas e logs",
+                    description="Configurar canais de boas-vindas, saídas e logs de voz",
                     emoji="📺",
                 ),
                 discord.SelectOption(
@@ -221,7 +361,13 @@ class ManagementPanelView(discord.ui.View):
             ch_target.callback = self.on_target_channel_select
             self.add_item(ch_type)
             self.add_item(ch_target)
-            self._add_footer_buttons(row=2)
+            self._add_button(
+                "Editar Cor / Imagem Boas-vindas",
+                self.open_welcome_visual_modal,
+                row=2,
+                emoji="🎨",
+            )
+            self._add_footer_buttons(row=3)
         elif category == "security":
             master_role = discord.ui.RoleSelect(placeholder="Selecione o Cargo Master...", min_values=1, max_values=1, row=0)
             master_role.callback = self.on_master_role_select
@@ -326,6 +472,13 @@ class ManagementPanelView(discord.ui.View):
             )
         channel_id = int(interaction.data["values"][0])  # type: ignore[index]
         await self._save_and_refresh(interaction, "channels", **{self.selected_channel_key: channel_id})
+
+    async def open_welcome_visual_modal(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        config = await get_guild_config(interaction.guild.id)  # type: ignore[union-attr]
+        current_color, current_image = get_welcome_visual_settings(interaction.guild.id, config)  # type: ignore[union-attr]
+        await interaction.response.send_modal(WelcomeVisualModal(self, current_color, current_image))
 
     async def on_master_role_select(self, interaction: discord.Interaction) -> None:
         if not await self._validate_interaction(interaction):

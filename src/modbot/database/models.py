@@ -16,6 +16,9 @@ class GuildConfig(Model):
     staff_log_channel_id = fields.BigIntField(null=True)
     ticket_log_channel_id = fields.BigIntField(null=True)
     raid_protection_enabled = fields.BooleanField(default=True)
+    anti_spam_enabled = fields.BooleanField(default=True)
+    welcome_embed_color = fields.IntField(null=True)
+    welcome_banner_url = fields.TextField(null=True)
     updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
@@ -40,6 +43,9 @@ _ALLOWED_FIELDS = frozenset(
         "staff_log_channel_id",
         "ticket_log_channel_id",
         "raid_protection_enabled",
+        "anti_spam_enabled",
+        "welcome_embed_color",
+        "welcome_banner_url",
     }
 )
 
@@ -52,5 +58,6 @@ async def update_guild_config(guild_id: int, **kwargs: object) -> GuildConfig:
     config = await get_guild_config(guild_id)
     for key, value in kwargs.items():
         setattr(config, key, value)
-    await config.save()
+    if kwargs:
+        await config.save(update_fields=list(kwargs.keys()))
     return config
