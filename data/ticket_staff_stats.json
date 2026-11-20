@@ -9,5 +9,18 @@
       }
     },
     "ranking_message_id": 1572818894471569492
+  },
+  "1560521461561557062": {
+    "staff": {},
+    "ranking_message_id": 1573518584561270889,
+    "categories": {
+      "financeiro": 1567216213032181810,
+      "parcerias": 1567216173760647258,
+      "duvidas": 1567216287803908216,
+      "denuncia": 1567216248608002099
+    },
+    "feedback_channel_id": 1562820906949148765,
+    "ranking_channel_id": 1572970836145471608,
+    "image_url": "https://cdn.discordapp.com/attachments/1562811445622866031/1562948639750496337/1792706378249.jpg?ex=6b021459&is=6b00c2d9&hm=689edbf09e76b638fdbdc075a3e183ea00451f9841c2fabd3ffb26f8f5cafbb0&"
   }
 }
