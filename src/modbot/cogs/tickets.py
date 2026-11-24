@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -8,34 +9,32 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modbot.database.models import get_guild_config
+from modbot.database.models import GuildConfig, StaffTicketStat, Ticket, get_guild_config
 
 FEEDBACK_COLOR = 0xF1C40F
 PANEL_COLOR = 0xF1C40F
 RANKING_COLOR = 16766208
 BRASILIA_TZ = timezone(timedelta(hours=-3))
-STATS_FILE = Path("data/ticket_staff_stats.json")
 RUNTIME_CONFIG_FILE = Path("data/ticket_panel_runtime.json")
 
-PANEL_TITLE = "「 BDV 」• Central de Atendimento"
-PANEL_DESC = (
-    "Bem-vindo à **Central de Suporte da BDV!**\n"
-    "Selecione a categoria abaixo para abrir um ticket.\n\n"
+DEFAULT_PANEL_TITLE = "Central de Atendimento e Suporte"
+DEFAULT_PANEL_DESC = (
+    "Bem-vindo à nossa **Central de Atendimento!**\n"
+    "Selecione uma categoria abaixo para abrir um ticket exclusivo com a nossa equipe.\n\n"
     "❓ **Dúvidas** — Esclarecimentos e orientações\n"
     "🤝 **Parcerias** — Propostas de colaboração\n"
-    "📢 **Denúncias** — Reporte de players ou violações\n"
-    "💰 **Financeiro** — Compra de mods/EQUIP BDV/VIP\n\n"
+    "📢 **Denúncias** — Reporte de infrações ou violações\n"
+    "💰 **Financeiro** — Doações, compras e VIP\n\n"
     "⚠️ Use os tickets com responsabilidade.\n"
-    "Abusos poderão resultar em punições.\n\n"
-    "「 BDV 」• Selecione uma categoria abaixo"
+    "Abusos poderão resultar em punições."
 )
-PANEL_FOOTER = "BAILE DA VILA • © Todos os direitos reservados."
+DEFAULT_PANEL_FOOTER = "Sistema de Atendimento • Todos os direitos reservados."
 
 TICKET_TYPES = [
-    discord.SelectOption(label="Financeiro", value="financeiro", emoji="💠", description="Compras de mods/EQUIP BDV/VIP"),
-    discord.SelectOption(label="Parcerias", value="parcerias", emoji="🤝", description="Proposta de parceria."),
-    discord.SelectOption(label="Dúvidas", value="duvidas", emoji="❓", description="Esclarecimento e orientação"),
-    discord.SelectOption(label="Denuncia", value="denuncia", emoji="🆘", description="Repórter de players ou violações STAFF"),
+    discord.SelectOption(label="Financeiro", value="financeiro", emoji="💠", description="Assuntos financeiros, VIP ou compras"),
+    discord.SelectOption(label="Parcerias", value="parcerias", emoji="🤝", description="Propostas de colaboração e eventos"),
+    discord.SelectOption(label="Dúvidas", value="duvidas", emoji="❓", description="Esclarecimento e orientação geral"),
+    discord.SelectOption(label="Denúncia", value="denuncia", emoji="🆘", description="Reportar jogadores ou condutas"),
 ]
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -71,15 +70,6 @@ def _parse_url(raw: str | None) -> str | None:
     return url if url.startswith(("https://", "http://")) else None
 
 
-def _stats_bucket(data: dict, guild_id: int) -> dict:
-    return data.setdefault(str(guild_id), {"staff": {}, "ranking_message_id": None})
-
-
-def _staff_entry(data: dict, guild_id: int, staff_id: int) -> dict:
-    staff = _stats_bucket(data, guild_id).setdefault("staff", {})
-    return staff.setdefault(str(staff_id), {"atendimentos": 0, "ratings": []})
-
-
 def get_runtime_settings(guild_id: int) -> dict:
     raw = _load_json(RUNTIME_CONFIG_FILE).get(str(guild_id), {})
     bucket = dict(raw) if isinstance(raw, dict) else {}
@@ -113,35 +103,29 @@ def set_ticket_type_category(guild_id: int, ticket_type: str, category_id: int |
     save_runtime_settings(guild_id, ticket_categories=cats)
 
 
-def record_ticket_claim(guild_id: int, staff_id: int) -> None:
-    data = _load_json(STATS_FILE)
-    entry = _staff_entry(data, guild_id, staff_id)
-    entry["atendimentos"] = int(entry.get("atendimentos", 0)) + 1
-    _save_json(STATS_FILE, data)
+async def record_ticket_claim(guild_id: int, staff_id: int) -> None:
+    stat, _ = await StaffTicketStat.get_or_create(guild_id=guild_id, staff_id=staff_id)
+    stat.atendimentos += 1
+    await stat.save(update_fields=["atendimentos"])
 
 
-def record_ticket_rating(guild_id: int, staff_id: int | None, rating: int) -> None:
+async def record_ticket_rating(guild_id: int, staff_id: int | None, rating: int) -> None:
     if not staff_id:
         return
-    data = _load_json(STATS_FILE)
-    entry = _staff_entry(data, guild_id, staff_id)
-    ratings = list(entry.get("ratings", []))
-    ratings.append(max(1, min(5, int(rating))))
-    entry["ratings"] = ratings
-    _save_json(STATS_FILE, data)
+    stat, _ = await StaffTicketStat.get_or_create(guild_id=guild_id, staff_id=staff_id)
+    stat.total_ratings += 1
+    stat.rating_sum += max(1, min(5, int(rating)))
+    await stat.save(update_fields=["total_ratings", "rating_sum"])
 
 
-def build_ranking_embed(guild_id: int) -> discord.Embed:
-    staff_map = _stats_bucket(_load_json(STATS_FILE), guild_id).get("staff", {})
+async def build_ranking_embed(guild_id: int) -> discord.Embed:
+    stats = await StaffTicketStat.filter(guild_id=guild_id).all()
     rows = []
-    for staff_id, info in staff_map.items():
-        if not isinstance(info, dict):
-            continue
-        atend = int(info.get("atendimentos", 0))
-        ratings = [float(r) for r in info.get("ratings", []) if isinstance(r, (int, float, str))]
-        count = len(ratings)
-        avg = (sum(ratings) / count) if count else 0.0
-        rows.append((atend, avg, count, int(staff_id)))
+    for stat in stats:
+        atend = stat.atendimentos
+        count = stat.total_ratings
+        avg = (stat.rating_sum / count) if count else 0.0
+        rows.append((atend, avg, count, stat.staff_id))
 
     rows.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     top_rows = rows[:15]
@@ -152,7 +136,10 @@ def build_ranking_embed(guild_id: int) -> discord.Embed:
         lines = ["Membros da equipe que mais se destacaram no suporte."]
         for pos, (atend, avg, count, staff_id) in enumerate(top_rows, start=1):
             header = MEDALS.get(pos, f"**{pos}.**")
-            lines.append(f"\n{header} <@{staff_id}>\n└ 🎫 Atend: `{atend}` | ⭐ Média: `{avg:.1f}` ({count} av.)")
+            lines.append(
+                f"\n{header} <@{staff_id}>\n"
+                f"└ 🎫 Atend: `{atend}` | ⭐ Média: `{avg:.1f}` ({count} av.)"
+            )
         desc = "".join(lines)
 
     now = datetime.now(BRASILIA_TZ).strftime("%H:%M")
@@ -175,14 +162,17 @@ async def _get_text_channel(bot: commands.Bot, channel_id: int | None) -> discor
 
 async def sync_ranking_channel(bot: commands.Bot, guild_id: int, force_new: bool = False) -> discord.Message | None:
     runtime = get_runtime_settings(guild_id)
-    ch = await _get_text_channel(bot, _parse_id(runtime.get("ranking_channel_id")))
+    target_channel_id = _parse_id(runtime.get("ranking_channel_id"))
+    if not target_channel_id:
+        config = await get_guild_config(guild_id)
+        target_channel_id = config.ticket_log_channel_id
+
+    ch = await _get_text_channel(bot, target_channel_id)
     if not ch:
         return None
 
-    embed = build_ranking_embed(guild_id)
-    data = _load_json(STATS_FILE)
-    bucket = _stats_bucket(data, guild_id)
-    msg_id = bucket.get("ranking_message_id")
+    embed = await build_ranking_embed(guild_id)
+    msg_id = runtime.get("ranking_message_id")
 
     if msg_id and not force_new:
         try:
@@ -194,8 +184,7 @@ async def sync_ranking_channel(bot: commands.Bot, guild_id: int, force_new: bool
 
     try:
         msg = await ch.send(embed=embed)
-        bucket["ranking_message_id"] = msg.id
-        _save_json(STATS_FILE, data)
+        save_runtime_settings(guild_id, ranking_message_id=msg.id)
         return msg
     except discord.HTTPException:
         return None
@@ -272,9 +261,9 @@ def _build_ticket_open_embed(
             f"🆔 **ID:**\n```\n{user.id}\n```\n"
             f"📂 **Categoria:** {cat_emoji}\n{cat_label}\n"
             f"🕒 **Aberto em:**\n<t:{ts}:F> (<t:{ts}:R>)\n\n"
-            f"Por favor, descreva seu problema detalhadamente.\n"
-            f"Um membro da **Staff** irá atendê-lo em breve.\n\n"
-            f"⏳ Aguarde com paciência — estamos aqui"
+            "Por favor, descreva seu problema detalhadamente.\n"
+            "Um membro da **Equipe de Suporte** irá atendê-lo em breve.\n\n"
+            "⏳ Aguarde com paciência — estamos aqui para ajudar."
         ),
         color=PANEL_COLOR,
     )
@@ -302,13 +291,56 @@ def _ticket_overwrites(
     return overwrites
 
 
+class AddMemberModal(discord.ui.Modal, title="Adicionar Membro ao Ticket"):
+    member_input = discord.ui.TextInput(
+        label="ID ou Menção do Usuário",
+        placeholder="Ex: 123456789012345678",
+        required=True,
+        max_length=40,
+    )
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.member_input.value.strip()
+        uid = _parse_id(raw)
+        if not uid or not interaction.guild:
+            return await interaction.response.send_message("❌ ID de usuário inválido.", ephemeral=True)
+
+        target = interaction.guild.get_member(uid)
+        if not target:
+            try:
+                target = await interaction.guild.fetch_member(uid)
+            except discord.HTTPException:
+                target = None
+
+        if not target:
+            return await interaction.response.send_message("❌ Membro não encontrado no servidor.", ephemeral=True)
+
+        try:
+            await self.channel.set_permissions(
+                target,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                reason=f"Adicionado ao ticket por {interaction.user}",
+            )
+            await interaction.response.send_message(f"✅ {target.mention} foi adicionado ao ticket com sucesso!")
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Sem permissão para alterar permissões deste canal.", ephemeral=True)
+
+
 class TicketRatingView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, guild_id: int, staff_id: int | None, staff_label: str):
+    def __init__(self, bot: commands.Bot, guild_id: int, staff_id: int | None, staff_label: str, ticket_number: int | None = None):
         super().__init__(timeout=86400)
         self.bot = bot
         self.guild_id = guild_id
         self.staff_id = staff_id
         self.staff_label = staff_label
+        self.ticket_number = ticket_number
         self.rated = False
         for n in range(1, 6):
             btn = discord.ui.Button(label=str(n), emoji="⭐", style=discord.ButtonStyle.secondary)
@@ -325,7 +357,15 @@ class TicketRatingView(discord.ui.View):
                 if isinstance(item, discord.ui.Button):
                     item.disabled = True
 
-            record_ticket_rating(self.guild_id, self.staff_id, stars)
+            await record_ticket_rating(self.guild_id, self.staff_id, stars)
+
+            # Atualiza nota no banco de dados
+            if self.ticket_number:
+                t = await Ticket.filter(guild_id=self.guild_id, ticket_number=self.ticket_number).first()
+                if t:
+                    t.rating = stars
+                    await t.save(update_fields=["rating"])
+
             word = "estrela" if stars == 1 else "estrelas"
             await interaction.response.edit_message(
                 content=f"Muito obrigado! Você avaliou o atendimento com **{stars}** {word}.",
@@ -340,7 +380,12 @@ class TicketRatingView(discord.ui.View):
 
     async def send_log(self, rating: int, user: discord.User | discord.Member):
         runtime = get_runtime_settings(self.guild_id)
-        ch = await _get_text_channel(self.bot, _parse_id(runtime.get("feedback_channel_id")))
+        target_ch = _parse_id(runtime.get("feedback_channel_id"))
+        if not target_ch:
+            config = await get_guild_config(self.guild_id)
+            target_ch = config.ticket_log_channel_id
+
+        ch = await _get_text_channel(self.bot, target_ch)
         if not ch:
             return
         now = datetime.now(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M")
@@ -391,9 +436,11 @@ class TicketPanel(discord.ui.View):
         cat_label = opt.label if opt else val.title()
         cat_emoji = str(opt.emoji) if opt and opt.emoji else "🎫"
 
+        config = await get_guild_config(guild.id)
         runtime = get_runtime_settings(guild.id)
-        cat_id = _parse_id(runtime.get("ticket_categories", {}).get(val))
+        cat_id = _parse_id(runtime.get("ticket_categories", {}).get(val)) or config.ticket_category_id
         category = guild.get_channel(cat_id) if cat_id else None
+
         if not isinstance(category, discord.CategoryChannel):
             await self._reset(interaction)
             return await interaction.response.send_message(
@@ -401,7 +448,6 @@ class TicketPanel(discord.ui.View):
                 ephemeral=True,
             )
 
-        config = await get_guild_config(guild.id)
         support_role = guild.get_role(config.ticket_support_role_id) if config.ticket_support_role_id else None
         num = _next_ticket_number(category)
 
@@ -413,10 +459,21 @@ class TicketPanel(discord.ui.View):
                 topic=f"Ticket #{num} de {interaction.user} ({interaction.user.id}) | categoria: {val}",
                 reason=f"Ticket #{num} aberto por {interaction.user} ({interaction.user.id})",
             )
+
+            # Registra o ticket no banco de dados
+            await Ticket.create(
+                guild_id=guild.id,
+                ticket_number=num,
+                channel_id=channel.id,
+                opener_id=interaction.user.id,
+                category=val,
+                status="open",
+            )
+
             embed = _build_ticket_open_embed(interaction.user, num, cat_label, cat_emoji, channel.created_at)
             mention = f"{support_role.mention} {interaction.user.mention}" if support_role else interaction.user.mention
             controls = TicketControls(
-                bot=interaction.client, opener_id=interaction.user.id, support_role_id=config.ticket_support_role_id
+                bot=interaction.client, opener_id=interaction.user.id, support_role_id=config.ticket_support_role_id, ticket_number=num
             )
             await channel.send(
                 content=mention,
@@ -434,11 +491,18 @@ class TicketPanel(discord.ui.View):
 
 
 class TicketControls(discord.ui.View):
-    def __init__(self, bot: commands.Bot | None = None, opener_id: int | None = None, support_role_id: int | None = None):
+    def __init__(
+        self,
+        bot: commands.Bot | None = None,
+        opener_id: int | None = None,
+        support_role_id: int | None = None,
+        ticket_number: int | None = None,
+    ):
         super().__init__(timeout=None)
         self.bot = bot
         self.opener_id = opener_id
         self.support_role_id = support_role_id
+        self.ticket_number = ticket_number
 
     async def _context(self, interaction: discord.Interaction) -> tuple[bool, int | None, int | None]:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -476,25 +540,92 @@ class TicketControls(discord.ui.View):
 
         try:
             staff = await _find_staff(channel, support_role_id, opener_id, interaction.user) if channel else None
-            await interaction.response.send_message("O ticket será fechado em 5 segundos.", ephemeral=True)
+            num_match = re.search(r"\d+", channel.name) if channel else None
+            ticket_num = int(num_match.group()) if num_match else (self.ticket_number or 0)
 
+            await interaction.response.send_message("O ticket será arquivado e fechado em 5 segundos...", ephemeral=True)
+
+            # Gera transcript de mensagens
+            transcript_lines = [
+                f"=== HISTÓRICO DO TICKET #{ticket_num} ({channel.name if channel else 'N/A'}) ===",
+                f"Servidor: {interaction.guild.name} ({interaction.guild.id})",
+                f"Aberto por ID: {opener_id or 'N/A'}",
+                f"Encerrado por: {interaction.user} ({interaction.user.id})",
+                f"Atendido por: {staff} ({staff.id})" if staff else "Atendido por: N/A",
+                f"Data de encerramento: {discord.utils.utcnow().strftime('%d/%m/%Y %H:%M:%S UTC')}",
+                "=" * 60,
+                "",
+            ]
+
+            if channel:
+                try:
+                    async for msg in channel.history(limit=300, oldest_first=True):
+                        ts = msg.created_at.strftime("%d/%m/%Y %H:%M:%S")
+                        author = f"{msg.author} ({msg.author.id})"
+                        content = msg.clean_content or "[Sem conteúdo de texto]"
+                        if msg.attachments:
+                            content += " | Anexos: " + ", ".join(a.url for a in msg.attachments)
+                        transcript_lines.append(f"[{ts}] {author}: {content}")
+                except Exception:
+                    transcript_lines.append("[Aviso: histórico parcialmente coletado]")
+
+            transcript_bytes = "\n".join(transcript_lines).encode("utf-8")
+
+            # Atualiza status no banco de dados
+            if channel:
+                ticket_rec = await Ticket.filter(channel_id=channel.id).first()
+                if not ticket_rec and opener_id:
+                    ticket_rec = await Ticket.filter(guild_id=interaction.guild.id, opener_id=opener_id, status="open").order_by("-id").first()
+                if ticket_rec:
+                    ticket_rec.status = "closed"
+                    ticket_rec.closed_at = discord.utils.utcnow()
+                    if staff:
+                        ticket_rec.staff_id = staff.id
+                    await ticket_rec.save()
+
+            # Envia transcript para o canal de logs configurado
+            config = await get_guild_config(interaction.guild.id)
+            log_cid = config.ticket_log_channel_id
+            log_channel = interaction.guild.get_channel(log_cid) if log_cid else None
+
+            if isinstance(log_channel, discord.TextChannel):
+                log_embed = discord.Embed(
+                    title=f"📁 Ticket #{ticket_num} Encerrado",
+                    description=(
+                        f"• **Ticket:** `{channel.name if channel else ticket_num}`\n"
+                        f"• **Aberto por:** <@{opener_id}>\n"
+                        f"• **Fechado por:** {interaction.user.mention}\n"
+                        f"• **Atendido por:** {staff.mention if staff else 'Não identificado'}"
+                    ),
+                    color=PANEL_COLOR,
+                    timestamp=discord.utils.utcnow(),
+                )
+                file = discord.File(io.BytesIO(transcript_bytes), filename=f"transcript-ticket-{ticket_num}.txt")
+                try:
+                    await log_channel.send(embed=log_embed, file=file)
+                except discord.HTTPException:
+                    pass
+
+            # Envia avaliação por DM para quem abriu
             if opener_id is not None and (opener := await _resolve_user(interaction.client, interaction.guild, opener_id)):
                 view = TicketRatingView(
                     bot=interaction.client,
                     guild_id=interaction.guild.id,
                     staff_id=staff.id if staff else None,
                     staff_label=staff.mention if staff else "Staff não identificado",
+                    ticket_number=ticket_num,
                 )
                 dm_embed = discord.Embed(
                     title="⭐ Avaliação de Atendimento",
                     description=(
                         f"Seu ticket em **{interaction.guild.name}** foi encerrado.\n"
-                        "Selecione uma nota de **1 a 5** estrelas para avaliar o atendimento:"
+                        "Selecione uma nota de **1 a 5** estrelas para avaliar o atendimento recebido:"
                     ),
                     color=FEEDBACK_COLOR,
                 )
                 try:
-                    await opener.send(embed=dm_embed, view=view)
+                    dm_file = discord.File(io.BytesIO(transcript_bytes), filename=f"seu-ticket-{ticket_num}.txt")
+                    await opener.send(embed=dm_embed, view=view, file=dm_file)
                 except discord.HTTPException:
                     pass
 
@@ -515,19 +646,21 @@ class TicketControls(discord.ui.View):
             return await interaction.response.send_message(
                 "Somente quem abriu ou a equipe de suporte pode adicionar membros.", ephemeral=True
             )
-        await interaction.response.send_message("Função de adicionar membro indisponível no momento.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Canal inválido.", ephemeral=True)
+        await interaction.response.send_modal(AddMemberModal(interaction.channel))
 
 
 class PublishPanelModal(discord.ui.Modal, title="Configurar e Publicar Painel"):
     feedback_channel_input = discord.ui.TextInput(
         label="ID do canal de feedback",
-        placeholder="Ex: 1562820906949148765 (opcional)",
+        placeholder="Ex: 123456789 (opcional)",
         required=False,
         max_length=30,
     )
     ranking_channel_input = discord.ui.TextInput(
         label="ID do canal de ranking",
-        placeholder="Ex: 1572970836145471608 (opcional)",
+        placeholder="Ex: 123456789 (opcional)",
         required=False,
         max_length=30,
     )
@@ -595,7 +728,7 @@ class Tickets(commands.Cog):
         config = await get_guild_config(message.guild.id)
         if _has_support_role(message.author, config.ticket_support_role_id):
             await _set_claimed_staff(message.channel, message.author)
-            record_ticket_claim(message.guild.id, message.author.id)
+            await record_ticket_claim(message.guild.id, message.author.id)
             embed = discord.Embed(
                 description=f"👮‍♂️ Ticket assumido automaticamente por {message.author.mention}.",
                 color=PANEL_COLOR,
@@ -608,20 +741,24 @@ class Tickets(commands.Cog):
         runtime = get_runtime_settings(guild_id)
         color = getattr(config, "ticket_panel_color", None)
         embed = discord.Embed(
-            title=getattr(config, "ticket_panel_title", None) or PANEL_TITLE,
-            description=getattr(config, "ticket_panel_desc", None) or PANEL_DESC,
+            title=getattr(config, "ticket_panel_title", None) or DEFAULT_PANEL_TITLE,
+            description=getattr(config, "ticket_panel_desc", None) or DEFAULT_PANEL_DESC,
             color=color if color is not None else PANEL_COLOR,
         )
-        footer = getattr(config, "ticket_panel_footer", None)
-        if footer is None:
-            footer = PANEL_FOOTER
-        if footer:
-            embed.set_footer(text=footer, icon_url=getattr(config, "ticket_panel_footer_icon", None))
+        footer = getattr(config, "ticket_panel_footer", None) or DEFAULT_PANEL_FOOTER
+        embed.set_footer(text=footer, icon_url=getattr(config, "ticket_panel_footer_icon", None))
         if img := (image_url or runtime.get("image_url") or getattr(config, "ticket_panel_image", None)):
             embed.set_image(url=img)
         if thumb := getattr(config, "ticket_panel_thumbnail", None):
             embed.set_thumbnail(url=thumb)
         return embed
+
+    @app_commands.command(name="ticket_painel", description="Publica o painel customizado para abrir tickets.")
+    async def ticket_painel(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("Use em um servidor.", ephemeral=True)
+        modal = PublishPanelModal(self, interaction.guild.id)
+        await interaction.response.send_modal(modal)
 
     @app_commands.command(name="ticket_ranking", description="Envia ou atualiza o ranking da staff no canal configurado.")
     async def ticket_ranking(self, interaction: discord.Interaction):
@@ -631,7 +768,7 @@ class Tickets(commands.Cog):
         if msg:
             await interaction.response.send_message(f"Ranking atualizado em {msg.channel.mention}.", ephemeral=True)
         else:
-            await interaction.response.send_message(embed=build_ranking_embed(interaction.guild.id), ephemeral=True)
+            await interaction.response.send_message(embed=await build_ranking_embed(interaction.guild.id), ephemeral=True)
 
 
 async def setup(bot):

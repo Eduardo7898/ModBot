@@ -48,12 +48,19 @@ class ModBot(commands.Bot):
             await self.load_extension(extension)
             _log.info("Cog carregado: %s", extension)
 
-        # Sincroniza os comandos de barra com o Discord
-        synced = await self.tree.sync()
-        _log.info(
-            "Sincronização concluída: %s comandos de aplicação registrados.",
-            len(synced),
-        )
+        # Sincroniza os comandos de barra com o Discord de forma resiliente
+        try:
+            synced = await self.tree.sync()
+            _log.info(
+                "Sincronização concluída: %s comandos de aplicação registrados.",
+                len(synced),
+            )
+        except discord.HTTPException as exc:
+            _log.warning(
+                "Falha ao sincronizar comandos no boot (possível rate limit do Discord): %s. "
+                "Use o comando /sync manualmente se necessário.",
+                exc,
+            )
 
 
     async def on_ready(self) -> None:

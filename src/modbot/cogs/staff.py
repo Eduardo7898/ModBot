@@ -1,7 +1,6 @@
 import asyncio
-import json
 import re
-import urllib.request
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,25 +8,25 @@ from discord.ext import commands
 from modbot.database.models import get_guild_config
 from modbot.utils.permissions import require_master
 
-CANAL_RESPOSTAS_ID = 1562821067506982932
-CANAL_RESULTADOS_ID = 1562820824602378263
-CARGO_EQUIPE_ID = 1562855905953976472
-CATEGORIA_FORMULARIOS_ID: int | None = None
+# IDs padrão de fallback (legado)
+DEFAULT_CANAL_RESPOSTAS_ID = 1562821067506982932
+DEFAULT_CANAL_RESULTADOS_ID = 1562820824602378263
+DEFAULT_CARGO_EQUIPE_ID = 1562855905953976472
 
 PERGUNTAS = [
-    "1️⃣ **Nome/Nick no Roblox:**",
-    "2️⃣ **Idade:** *(Lembrando que buscamos maturidade para o cargo)*",
+    "1️⃣ **Nome/Nick no Roblox (ou Nick Principal):**",
+    "2️⃣ **Idade:** *(Buscamos maturidade para o cargo)*",
     "3️⃣ **Em quais horários você costuma ficar online?** *(Manhã, Tarde, Noite ou Madrugada)*",
-    "4️⃣ **Já trabalhou em algum outro mapa ou evento (PDP, etc)?** Se sim, qual era seu cargo?",
-    "5️⃣ **Por que você quer entrar para a Staff da Baile da Vila 🏡?**",
+    "4️⃣ **Já trabalhou em algum outro servidor, mapa ou evento?** Se sim, qual era seu cargo?",
+    "5️⃣ **Por que você quer entrar para a Staff da nossa comunidade?**",
     "6️⃣ **O que diferencia você dos outros candidatos?**",
     "7️⃣ **Como você reage em situações de conflito ou desrespeito às regras?**",
-    "8️⃣ **De 0 a 10, qual seu nível de conhecimento sobre comandos de administração (Admin Commands)?** Cite alguns.",
-    "9️⃣ **Se um influenciador chegar no evento descumprindo as regras, qual seria sua postura?**",
-    "🔟 **Você tem facilidade em gravar provas (vídeos/prints) caso precise banir alguém?**",
+    "8️⃣ **De 0 a 10, qual seu nível de conhecimento sobre comandos de administração?** Cite alguns.",
+    "9️⃣ **Se um membro influente descumprir as regras, qual seria sua postura?**",
+    "🔟 **Você tem facilidade em gravar provas (vídeos/prints) caso precise punir alguém?**",
     "1️⃣1️⃣ **Termo de Ciência:** *Estou ciente de que o cargo exige responsabilidade e que abusos de poder resultarão em remoção imediata.* Responda com **Sim** para confirmar.",
-    "1️⃣2️⃣ **Compromisso Visual:** *Comprometo-me a seguir a paleta de cores e o padrão visual da equipe durante os eventos.* Responda com **Sim** para confirmar.",
-    "1️⃣3️⃣ **Número do WhatsApp:**",
+    "1️⃣2️⃣ **Compromisso:** *Comprometo-me a seguir o padrão de conduta e regras da equipe durante os eventos.* Responda com **Sim** para confirmar.",
+    "1️⃣3️⃣ **Contato (WhatsApp ou Discord alternativo):**",
 ]
 
 formularios_ativos: set[int] = set()
@@ -38,20 +37,20 @@ def _bloco(texto: str, limite: int = 1024) -> str:
     return f"```\n{limpo[:max(1, limite - 8)]}\n```"
 
 
-def _roblox_sync(username: str) -> dict | None:
+async def _roblox_async(username: str) -> dict | None:
+    """Verifica usuário na API do Roblox de forma assíncrona sem travar o loop."""
+    url = "https://users.roblox.com/v1/usernames/users"
+    payload = {"usernames": [username], "excludeBannedUsers": False}
     try:
-        payload = json.dumps({"usernames": [username], "excludeBannedUsers": False}).encode()
-        req = urllib.request.Request(
-            "[https://users.roblox.com/v1/usernames/users](https://users.roblox.com/v1/usernames/users)",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            users = json.loads(resp.read().decode()).get("data", [])
-            return users[0] if users else None
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    users = data.get("data", [])
+                    return users[0] if users else None
     except Exception:
         return None
+    return None
 
 
 async def _extrair_membro_e_cargo(
@@ -65,7 +64,11 @@ async def _extrair_membro_e_cargo(
             membro = await interaction.guild.fetch_member(candidato_id)
         except discord.NotFound:
             membro = None
-    return membro, interaction.guild.get_role(CARGO_EQUIPE_ID)
+
+    config = await get_guild_config(interaction.guild.id)
+    cargo_id = config.staff_team_role_id or DEFAULT_CARGO_EQUIPE_ID
+    cargo = interaction.guild.get_role(cargo_id) if cargo_id else None
+    return membro, cargo
 
 
 class DecisaoCandidaturaView(discord.ui.View):
@@ -104,7 +107,7 @@ class DecisaoCandidaturaView(discord.ui.View):
                 item.disabled = True
         if interaction.message and interaction.message.embeds:
             emb = interaction.message.embeds[0].copy()
-            emb.color = 3066993 if aprovado else discord.Color.red()
+            emb.color = discord.Color.green() if aprovado else discord.Color.red()
             emb.add_field(name="🔍 Avaliador", value=interaction.user.mention, inline=True)
             tag = "APROVADO" if aprovado else "REPROVADO"
             emb.set_footer(text=f"{'✅' if aprovado else '❌'} {tag} por {interaction.user.display_name} | ID: {membro_id or 'N/A'}")
@@ -124,36 +127,42 @@ class DecisaoCandidaturaView(discord.ui.View):
         if not membro:
             return await interaction.response.send_message("❌ Candidato não encontrado no servidor.", ephemeral=True)
         if not cargo:
-            return await interaction.response.send_message("❌ Cargo da equipe não encontrado.", ephemeral=True)
+            return await interaction.response.send_message("❌ Cargo da equipe não encontrado ou não configurado.", ephemeral=True)
 
         try:
-            await membro.add_roles(cargo, reason=f"Aprovado por {interaction.user}")
+            await membro.add_roles(cargo, reason=f"Candidatura de Staff aprovada por {interaction.user}")
         except discord.Forbidden:
-            return await interaction.response.send_message("❌ Sem permissão para adicionar o cargo.", ephemeral=True)
+            return await interaction.response.send_message("❌ Sem permissão de cargos para adicionar o cargo da equipe.", ephemeral=True)
 
         await self._finalizar_ficha(interaction, True, membro.id)
 
-        canal_res = interaction.guild.get_channel(CANAL_RESULTADOS_ID)
+        config = await get_guild_config(interaction.guild.id)
+        res_id = config.staff_results_channel_id or DEFAULT_CANAL_RESULTADOS_ID
+        canal_res = interaction.guild.get_channel(res_id)
+
         if isinstance(canal_res, discord.TextChannel):
             avatar = membro.display_avatar.url if membro.display_avatar else None
             emb = discord.Embed(
                 title="🎉 Novo Staff Aprovado!",
-                description=f"{membro.mention} foi **aprovado(a)** na candidatura de Staff!",
-                color=3066993,
+                description=f"{membro.mention} foi **aprovado(a)** na candidatura para a Equipe!",
+                color=discord.Color.green(),
                 timestamp=discord.utils.utcnow(),
             )
             emb.set_author(name=membro.display_name, icon_url=avatar)
             if avatar:
                 emb.set_thumbnail(url=avatar)
             emb.add_field(name="👤 Usuário", value=f"{membro.mention}\n({membro.id})", inline=True)
-            emb.add_field(name="🎮 Nick Roblox", value=self._nick_roblox(interaction), inline=True)
+            emb.add_field(name="🎮 Identificação/Nick", value=self._nick_roblox(interaction), inline=True)
             emb.add_field(name="✅ Aprovado por", value=interaction.user.mention, inline=True)
-            emb.set_footer(text="Baile da Vila 🏡 • Sistema de Candidatura")
-            await canal_res.send(content=membro.mention, embed=emb)
+            emb.set_footer(text=f"{interaction.guild.name} • Sistema de Candidatura")
+            try:
+                await canal_res.send(content=membro.mention, embed=emb)
+            except discord.HTTPException:
+                pass
 
         try:
             await membro.send(
-                f"🎉 Parabéns! Sua candidatura para Staff na **Baile da Vila 🏡** foi **aprovada** no servidor **{interaction.guild.name}**!"
+                f"🎉 Parabéns! Sua candidatura para a equipe no servidor **{interaction.guild.name}** foi **aprovada**!"
             )
             pv = "PV enviado com sucesso."
         except discord.Forbidden:
@@ -175,7 +184,8 @@ class DecisaoCandidaturaView(discord.ui.View):
         if membro:
             try:
                 await membro.send(
-                    f"📋 Olá {membro.mention}, agradecemos sua participação no processo seletivo da **Baile da Vila 🏡**. Desta vez sua candidatura não foi aprovada, mas você poderá tentar novamente em uma próxima oportunidade!"
+                    f"📋 Olá {membro.mention}, agradecemos sua participação no processo seletivo de **{interaction.guild.name}**. "
+                    "Desta vez sua candidatura não foi aprovada, mas você poderá tentar novamente em uma próxima oportunidade!"
                 )
             except discord.Forbidden:
                 pass
@@ -196,12 +206,12 @@ async def iniciar_entrevista_ticket(bot: commands.Bot, canal: discord.TextChanne
 
     try:
         await canal.send(
-            f"👋 Olá {candidato.mention}! Bem-vindo ao seu formulário de candidatura para Staff da **Baile da Vila 🏡**.\n"
+            f"👋 Olá {candidato.mention}! Bem-vindo ao seu formulário de candidatura para a Staff de **{candidato.guild.name}**.\n"
             f"Responda cada pergunta abaixo enviando uma mensagem neste canal. *(Digite `cancelar` a qualquer momento para encerrar)*."
         )
 
         for idx, pergunta in enumerate(PERGUNTAS, start=1):
-            await canal.send(embed=discord.Embed(title=f"Pergunta {idx} de {len(PERGUNTAS)}", description=pergunta, color=0xE74C3C))
+            await canal.send(embed=discord.Embed(title=f"Pergunta {idx} de {len(PERGUNTAS)}", description=pergunta, color=discord.Color.gold()))
             try:
                 msg = await bot.wait_for("message", timeout=600.0, check=check)
             except asyncio.TimeoutError:
@@ -218,28 +228,38 @@ async def iniciar_entrevista_ticket(bot: commands.Bot, canal: discord.TextChanne
 
             respostas.append((pergunta, msg.content.strip() or "[Anexo/Sem texto]"))
 
-        canal_res = candidato.guild.get_channel(CANAL_RESPOSTAS_ID)
+        config = await get_guild_config(candidato.guild.id)
+        ans_id = config.staff_answers_channel_id or DEFAULT_CANAL_RESPOSTAS_ID
+        canal_res = candidato.guild.get_channel(ans_id)
+
         if isinstance(canal_res, discord.TextChannel):
             nick = respostas[0][1] if respostas else "Não informado"
-            conta = await asyncio.to_thread(_roblox_sync, nick.strip())
             avatar = candidato.display_avatar.url if candidato.display_avatar else None
 
             ficha = discord.Embed(title="📋 Nova Candidatura de Staff", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
             ficha.set_author(name=f"{candidato.display_name} ({candidato.id})", icon_url=avatar)
             ficha.add_field(name="👤 Usuário", value=f"{candidato.mention}\n({candidato.id})", inline=False)
-            if conta:
-                ficha.add_field(name="✅ Conta Roblox Verificada", value=_bloco(f"{conta.get('name')} (ID: {conta.get('id')})"), inline=False)
+
+            if getattr(config, "staff_roblox_enabled", True):
+                conta = await _roblox_async(nick.strip())
+                if conta:
+                    ficha.add_field(name="✅ Conta Roblox Verificada", value=_bloco(f"{conta.get('name')} (ID: {conta.get('id')})"), inline=False)
+                else:
+                    ficha.add_field(name="⚠️ Conta Roblox não encontrada", value=f"Não foi possível verificar a conta **{nick}** na API do Roblox.", inline=False)
             else:
-                ficha.add_field(name="⚠️ Conta Roblox não encontrada", value=f"Não foi possível verificar a conta **{nick}** na API do Roblox. Verifique manualmente.", inline=False)
+                ficha.add_field(name="🎮 Identificação", value=_bloco(nick), inline=False)
 
             for perg, resp in respostas:
-                ficha.add_field(name=perg.replace("**", "").replace("*", "")[:256], value=_bloco(resp), inline=False)
+                clean_title = perg.replace("**", "").replace("*", "")[:256]
+                ficha.add_field(name=clean_title, value=_bloco(resp), inline=False)
 
-            cargo_eq = candidato.guild.get_role(CARGO_EQUIPE_ID)
-            mencao = cargo_eq.mention if cargo_eq else f"<@&{CARGO_EQUIPE_ID}>"
+            cargo_eq_id = config.staff_team_role_id or DEFAULT_CARGO_EQUIPE_ID
+            cargo_eq = candidato.guild.get_role(cargo_eq_id)
+            mencao = cargo_eq.mention if cargo_eq else f"<@&{cargo_eq_id}>"
+
             await canal_res.send(content=mencao, embed=ficha, view=DecisaoCandidaturaView(candidato_id=candidato.id))
 
-        await canal.send("✅ **Formulário concluído!** Suas respostas foram enviadas para a equipe da **Baile da Vila 🏡**.\nEste canal será fechado automaticamente em 10 segundos.")
+        await canal.send(f"✅ **Formulário concluído!** Suas respostas foram enviadas para a equipe de **{candidato.guild.name}**.\nEste canal será fechado automaticamente em 10 segundos.")
         await asyncio.sleep(10)
         await _excluir_canal(canal, "Formulário de candidatura concluído")
     finally:
@@ -262,7 +282,8 @@ class BotaoCandidatar(discord.ui.Button):
             return await interaction.response.send_message(f"⚠️ Você já tem um canal de formulário aberto: {existente.mention}", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
-        cat_id = CATEGORIA_FORMULARIOS_ID
+        config = await get_guild_config(interaction.guild.id)
+        cat_id = config.staff_form_category_id
         categoria = interaction.guild.get_channel(cat_id) if cat_id else getattr(interaction.channel, "category", None)
         if not isinstance(categoria, discord.CategoryChannel):
             categoria = None
@@ -273,7 +294,12 @@ class BotaoCandidatar(discord.ui.Button):
             interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
         }
         try:
-            ticket = await interaction.guild.create_text_channel(name=nome_canal, category=categoria, overwrites=overwrites, reason=f"Formulário de Staff por {interaction.user}")
+            ticket = await interaction.guild.create_text_channel(
+                name=nome_canal,
+                category=categoria,
+                overwrites=overwrites,
+                reason=f"Formulário de Staff por {interaction.user}",
+            )
         except discord.Forbidden:
             return await interaction.followup.send("❌ Não tenho permissão para criar canais (`Gerenciar Canais`).", ephemeral=True)
 
@@ -284,20 +310,20 @@ class BotaoCandidatar(discord.ui.Button):
 
 
 class PainelStaffLayout(discord.ui.LayoutView):
-    def __init__(self) -> None:
+    def __init__(self, guild_name: str = "Nossa Comunidade") -> None:
         super().__init__(timeout=None)
         texto = (
-            "# 🏡 Candidatura para Staff — Baile da Vila 🏡\n\n"
-            "-# Você quer fazer parte da equipe que organiza e garante a melhor experiência na **Baile da Vila 🏡**?\n\n"
+            f"# 🏡 Candidatura para Staff — {guild_name}\n\n"
+            f"-# Você quer fazer parte da equipe de moderação e suporte de **{guild_name}**?\n\n"
             "-# **O que buscamos:**\n"
             "-# 🎯 Maturidade e responsabilidade\n"
-            "-# 🛡️ Conhecimento de comandos de administração\n"
+            "-# 🛡️ Conhecimento de regras e comandos de administração\n"
             "-# 🎥 Facilidade em registrar provas (prints/vídeos)\n"
-            "-# 🤝 Boa comunicação e postura profissional\n\n"
+            "-# 🤝 Boa comunicação e postura respeitosa\n\n"
             "-# **Como se candidatar:**\n"
             "-# Clique no botão abaixo e responda o formulário. Um canal exclusivo será criado para você!\n\n"
-            "-# ⚠️ Todas as perguntas são obrigatórias. Abusos de poder resultarão em remoção imediata.\n\n"
-            "-# Baile da Vila 🏡 • Processo Seletivo de Staff"
+            "-# ⚠️ Todas as perguntas são obrigatórias. Abusos resultarão em desclassificação.\n\n"
+            f"-# {guild_name} • Processo Seletivo de Staff"
         )
         self.add_item(
             discord.ui.Container(
@@ -351,7 +377,7 @@ class Staff(commands.Cog):
         if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
             return await interaction.response.send_message("Não foi possível enviar o painel neste canal.", ephemeral=True)
         try:
-            await interaction.channel.send(view=PainelStaffLayout())
+            await interaction.channel.send(view=PainelStaffLayout(interaction.guild.name))
             await interaction.response.send_message("✅ Painel de candidatura enviado com sucesso neste canal!", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("Não tenho permissão para enviar mensagens neste canal.", ephemeral=True)

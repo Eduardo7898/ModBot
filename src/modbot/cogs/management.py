@@ -18,6 +18,10 @@ CHANNEL_ITEMS = [
     ("Boas-vindas", "welcome_channel_id", "👋"),
     ("Saídas", "leave_channel_id", "🚪"),
     ("Logs de Voz", "call_log_channel_id", "🔊"),
+    ("Logs da Equipe", "staff_log_channel_id", "👮"),
+    ("Logs de Tickets", "ticket_log_channel_id", "🎫"),
+    ("Respostas de Candidaturas", "staff_answers_channel_id", "📥"),
+    ("Resultados de Candidaturas", "staff_results_channel_id", "📢"),
 ]
 
 DEFAULT_WELCOME_COLOR = 0x09FF00  # 655104
@@ -188,6 +192,8 @@ async def build_category_embed(guild: discord.Guild, category: str) -> discord.E
     elif category == "security":
         raid_status = _fmt_toggle(bool(getattr(config, "raid_protection_enabled", False)))
         spam_status = _fmt_toggle(bool(getattr(config, "anti_spam_enabled", True)))
+        punish_mode = getattr(config, "antiraid_punish_mode", "strip_roles")
+        punish_str = "Expulsar bot e retirar cargos" if punish_mode == "strip_roles" else "Apenas expulsar o bot"
         embed = discord.Embed(
             title=f"🛡️ Segurança e Cargos | {guild.name}",
             description="Gerencie o Anti-Raid, o Anti-Spam, o canal de alertas de bot e o Cargo Master do servidor.",
@@ -197,9 +203,28 @@ async def build_category_embed(guild: discord.Guild, category: str) -> discord.E
             name="Configurações Atuais",
             value=(
                 f"**Anti-Raid:** {raid_status}\n"
+                f"**Punição Anti-Raid:** `{punish_str}`\n"
                 f"**Anti-Spam:** {spam_status}\n"
                 f"**Canal Anti-Raid:** {_fmt_id(getattr(config, 'antiraid_channel_id', None), '#')}\n"
                 f"**Cargo Master:** {_fmt_id(getattr(config, 'master_role_id', None), '@&')}"
+            ),
+            inline=False,
+        )
+    elif category == "staff":
+        roblox_status = _fmt_toggle(bool(getattr(config, "staff_roblox_enabled", True)))
+        embed = discord.Embed(
+            title=f"📋 Recrutamento de Staff | {guild.name}",
+            description="Configure o cargo entregue aos aprovados, a categoria onde os canais de formulário são criados e a validação do Roblox.",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="Configurações Atuais",
+            value=(
+                f"🎖️ **Cargo da Equipe:** {_fmt_id(getattr(config, 'staff_team_role_id', None), '@&')}\n"
+                f"📁 **Categoria dos Formulários:** {_fmt_id(getattr(config, 'staff_form_category_id', None), '#')}\n"
+                f"📥 **Canal de Respostas:** {_fmt_id(getattr(config, 'staff_answers_channel_id', None), '#')}\n"
+                f"📢 **Canal de Resultados:** {_fmt_id(getattr(config, 'staff_results_channel_id', None), '#')}\n"
+                f"🎮 **Verificação de Conta Roblox:** {roblox_status}"
             ),
             inline=False,
         )
@@ -333,6 +358,12 @@ class ManagementPanelView(discord.ui.View):
                     description="Configurar categorias por tipo, cargo de suporte e painel",
                     emoji="🎫",
                 ),
+                discord.SelectOption(
+                    label="Recrutamento / Staff",
+                    value="staff",
+                    description="Configurar cargo da equipe, categoria e validação do formulário",
+                    emoji="📋",
+                ),
             ],
             row=0,
         )
@@ -385,6 +416,28 @@ class ManagementPanelView(discord.ui.View):
             self.add_item(antiraid_channel)
             self._add_button("Alternar Anti-Raid", self.toggle_antiraid, row=2, emoji="🛡️")
             self._add_button("Alternar Anti-Spam", self.toggle_antispam, row=2, emoji="🚫")
+            self._add_button("Alternar Punição Anti-Raid", self.toggle_antiraid_punish, row=2, emoji="⚖️")
+            self._add_footer_buttons(row=3)
+        elif category == "staff":
+            staff_role = discord.ui.RoleSelect(
+                placeholder="Selecione o Cargo da Equipe...",
+                min_values=1,
+                max_values=1,
+                row=0,
+            )
+            form_cat = discord.ui.ChannelSelect(
+                placeholder="Selecione a categoria para os formulários...",
+                channel_types=[discord.ChannelType.category],
+                min_values=1,
+                max_values=1,
+                row=1,
+            )
+            staff_role.callback = self.on_staff_team_role_select
+            form_cat.callback = self.on_staff_form_category_select
+            self.add_item(staff_role)
+            self.add_item(form_cat)
+            self._add_button("Alternar Validação Roblox", self.toggle_staff_roblox, row=2, emoji="🎮")
+            self._add_button("Publicar Painel de Staff Aqui", self.send_staff_panel_here, row=2, emoji="📋", style=discord.ButtonStyle.success)
             self._add_footer_buttons(row=3)
         elif category == "tickets":
             ticket_type = discord.ui.Select(
@@ -497,6 +550,45 @@ class ManagementPanelView(discord.ui.View):
 
     async def toggle_antispam(self, interaction: discord.Interaction) -> None:
         await self._toggle_field(interaction, "anti_spam_enabled", default=True)
+
+    async def toggle_antiraid_punish(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        config = await get_guild_config(interaction.guild.id)  # type: ignore[union-attr]
+        current = getattr(config, "antiraid_punish_mode", "strip_roles")
+        new_mode = "kick_only" if current == "strip_roles" else "strip_roles"
+        await self._save_and_refresh(interaction, "security", antiraid_punish_mode=new_mode)
+
+    async def on_staff_team_role_select(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        role_id = int(interaction.data["values"][0])  # type: ignore[index]
+        await self._save_and_refresh(interaction, "staff", staff_team_role_id=role_id)
+
+    async def on_staff_form_category_select(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        category_id = int(interaction.data["values"][0])  # type: ignore[index]
+        await self._save_and_refresh(interaction, "staff", staff_form_category_id=category_id)
+
+    async def toggle_staff_roblox(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        config = await get_guild_config(interaction.guild.id)  # type: ignore[union-attr]
+        current = bool(getattr(config, "staff_roblox_enabled", True))
+        await self._save_and_refresh(interaction, "staff", staff_roblox_enabled=not current)
+
+    async def send_staff_panel_here(self, interaction: discord.Interaction) -> None:
+        if not await self._validate_interaction(interaction):
+            return
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            return await interaction.response.send_message("Não é possível enviar o painel neste tipo de canal.", ephemeral=True)
+        from modbot.cogs.staff import PainelStaffLayout
+        try:
+            await interaction.channel.send(view=PainelStaffLayout(interaction.guild.name))  # type: ignore[union-attr]
+            await interaction.response.send_message("✅ Painel de staff publicado neste canal!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Sem permissão para enviar mensagens aqui.", ephemeral=True)
 
     async def on_ticket_type_select(self, interaction: discord.Interaction) -> None:
         if not await self._validate_interaction(interaction):

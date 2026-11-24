@@ -16,13 +16,53 @@ class GuildConfig(Model):
     staff_log_channel_id = fields.BigIntField(null=True)
     ticket_log_channel_id = fields.BigIntField(null=True)
     raid_protection_enabled = fields.BooleanField(default=True)
+    antiraid_punish_mode = fields.CharField(max_length=32, default="strip_roles")
     anti_spam_enabled = fields.BooleanField(default=True)
     welcome_embed_color = fields.IntField(null=True)
     welcome_banner_url = fields.TextField(null=True)
+    staff_answers_channel_id = fields.BigIntField(null=True)
+    staff_results_channel_id = fields.BigIntField(null=True)
+    staff_team_role_id = fields.BigIntField(null=True)
+    staff_form_category_id = fields.BigIntField(null=True)
+    staff_roblox_enabled = fields.BooleanField(default=True)
     updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
         table = "guild_configurations"
+
+
+class Ticket(Model):
+    """Registro de tickets criados nos servidores."""
+
+    id = fields.IntField(primary_key=True)
+    guild_id = fields.BigIntField(index=True)
+    ticket_number = fields.IntField()
+    channel_id = fields.BigIntField(null=True)
+    opener_id = fields.BigIntField(index=True)
+    staff_id = fields.BigIntField(null=True, index=True)
+    category = fields.CharField(max_length=64)
+    status = fields.CharField(max_length=20, default="open")  # open, closed
+    rating = fields.SmallIntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    closed_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "tickets"
+
+
+class StaffTicketStat(Model):
+    """Métricas agregadas de atendimento e avaliações da equipe de suporte."""
+
+    id = fields.IntField(primary_key=True)
+    guild_id = fields.BigIntField(index=True)
+    staff_id = fields.BigIntField(index=True)
+    atendimentos = fields.IntField(default=0)
+    total_ratings = fields.IntField(default=0)
+    rating_sum = fields.IntField(default=0)
+
+    class Meta:
+        table = "staff_ticket_stats"
+        unique_together = (("guild_id", "staff_id"),)
 
 
 async def get_guild_config(guild_id: int) -> GuildConfig:
@@ -43,9 +83,15 @@ _ALLOWED_FIELDS = frozenset(
         "staff_log_channel_id",
         "ticket_log_channel_id",
         "raid_protection_enabled",
+        "antiraid_punish_mode",
         "anti_spam_enabled",
         "welcome_embed_color",
         "welcome_banner_url",
+        "staff_answers_channel_id",
+        "staff_results_channel_id",
+        "staff_team_role_id",
+        "staff_form_category_id",
+        "staff_roblox_enabled",
     }
 )
 
